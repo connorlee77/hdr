@@ -17,7 +17,7 @@ import numpy as np
 from exposure import Exposure
 from camera import Camera
 
-PROD = 0
+PROD = 1
 
 def main():
     
@@ -44,10 +44,10 @@ def main():
 
     else:
         
-        camera1 = Camera(topic='camera1/camera/image_raw', stride=10)
+        camera1 = Camera(topic='camera/image_raw', stride=10)
         cameras = [camera1]
 
-        client1 = dynamic_reconfigure.client.Client("camera1/camera", timeout=3)
+        client1 = dynamic_reconfigure.client.Client("camera", timeout=3)
         clients = [client1]
 
     exposureControl = Exposure(cameras, clients)
