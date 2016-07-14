@@ -1,0 +1,18 @@
+<package>
+  <description brief="hdr_cal2">
+
+     hdr_cal
+
+  </description>
+  <author>clee</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/hdr_cal</url>
+  <depend package="sensor_msgs"/>
+  <depend package="cv_bridge"/>
+  <depend package="rospy"/>
+  <depend package="std_msgs"/>
+
+</package>
+
+
