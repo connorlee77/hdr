@@ -13,7 +13,6 @@ import time
 
 import cv2
 import numpy as np
-from matplotlib import pyplot as plt
 
 from exposure import Exposure
 from camera import Camera
@@ -55,7 +54,6 @@ def main():
     exposureControl.adjust()
 
     rospy.signal_shutdown("Calibration interrupted.")
-
 
 if __name__ == '__main__':
     main()

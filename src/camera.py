@@ -15,7 +15,6 @@ import time
 
 import cv2
 import numpy as np
-from matplotlib import pyplot as plt
 
 
 class Camera:

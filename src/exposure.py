@@ -12,7 +12,6 @@ import time
 
 import cv2
 import numpy as np
-from matplotlib import pyplot as plt
 from camera import Camera
 
 DEBUG = 1
@@ -23,22 +22,17 @@ BITSPERPIXEL = 8
 # Voltage Options
 VOLTAGE_OPTIONS = np.array([200, 400, 600, 800, 1000, 1200, 1761, 1784, 1808, 1831, 1855, 1878, 1902, 1949, 1972, 1996, 2019, 2043, 2066, 2090, 2113, 2137, 2160, 2184, 2207, 2231, 2254, 2278, 2301, 2325, 2348, 2372, 2395, 2419, 2442, 2466, 2489, 2513, 2536, 2583, 2607, 2630, 2654, 2677, 2701, 2724, 2748, 2771, 2795, 2818, 2842, 2865, 2889, 2912, 2936, 2959, 2983, 3006, 3030, 3053, 3077,3100])
 # Exposure Times
-SHUTTER_TIMES = np.array([250000, 125000, 62500, 31250, 15625, 7812, 3906, 1953, 976, 488, 244, 122, 61, 30])
-SHUTTERMAX = np.float32(SHUTTER_TIMES[0])
-# Normalized exposure times for PID controller and other methods
-SHUTTER_TIMES_RAW = np.divide(SHUTTER_TIMES, SHUTTERMAX) 
+SHUTTER_TIMES = np.array([500000, 250000, 125000, 62500, 31250, 15625, 7812, 3906, 1953, 976, 488, 244, 122, 61, 30])
 SHUTTER_INIT = 0.0005
 
 class Exposure:
 
 	# Initializes an Exposure object.
-	def __init__(self, cameras, clients, maxSaturatedPixels=100, numKneePoints=2):
+	def __init__(self, cameras, clients):
 		# Creates a camera that reads in every "stride" frames.
 		self.cameras = cameras
 		self.clients = clients
-
-		self.maxSaturatedPixels = maxSaturatedPixels
-		self.numKneePoints = numKneePoints
+		self.num_cameras = float(len(cameras))
 	
 		# Initialize camera to initial parameters
 		for i, client in enumerate(self.clients):
@@ -48,14 +42,8 @@ class Exposure:
 				"hdr_mode" : 'User'
 			})
 
-		# Keeps track of image saturation levels across time axis.
-		self.saturations = [0]
-		# Keep track of PID errors for integral component. Initialized to arbitrary reference value.
-		self.PIDerrors = SHUTTER_TIMES_RAW[7]
-		# Keep track of previous error for the PID controller. Used for derivitive step.
-		self.prevError = 0
 
-	# Retrieves a frame from the camera. Return the image's histogram.
+	# Retrieves a frame from the camera. Return the image's histogram and median.
 	def getHistogram(self, camera):
 
 		frame = camera.getFrame()
@@ -68,7 +56,6 @@ class Exposure:
 
 
 	### Exposure methods ###
-
 	# Calculates the mean sample value of the histogram. 
 	def getIntensityAverage(self, histogram, totalPixelCount=PIXELCOUNT, bitsPerPixel=BITSPERPIXEL):
 		D = 2**bitsPerPixel
@@ -80,129 +67,31 @@ class Exposure:
 			histSum += histogram[i]
 
 		return currSum / histSum 
-		#return (currSum - totalPixelCount) / (totalPixelCount * (D - 1))
-
-
-	### Saturation methods ###
-
-	# Calculate saturation of the 255 intensity level of the histogram.
-	# Saturation within [0, 1]
-	def getSaturation(self, histogram, bitsPerPixel=BITSPERPIXEL, totalPixelCount=PIXELCOUNT):
-		D = 2**bitsPerPixel
-
-		return histogram[D - 1] / np.float32(totalPixelCount)
-
-	# Adjust voltage values depending on saturation. Scale the adjustments 
-	# in order to align with the voltage values of the camera.
-	def adjustSaturation(self, histogram, v0raw, v1raw, n=100, scale=1):
-		saturationLevel = self.getSaturation(histogram)
-
-		arr = np.array(self.saturations)
-
-		scale=200
-
-		if saturationLevel > np.max(arr):
-			v0raw += 1 * scale
-			v1raw += 1 * scale
-		elif saturationLevel < np.min(arr):
-			v0raw -= 1 * scale
-			v1raw -= 1 * scale
-
-		if len(arr) > 100:
-			self.saturations = [0]
-
-		self.saturations.append(saturationLevel)
-
-		v0 = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v0raw).argmin()]
-		v1 = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v1raw).argmin()]
-
-		return v0raw, v1raw, v0, v1
 
 	### Entropy methods ###
-
-	# Calculates entropy of image. Adjusts first kneepoint to decrease entropy. gamma and eta need to be 
-	# tuned to align with exposure values of the camera. 
-	def adjustEntropy(self, histogram, t0, maxt0, prevEntropy, epsilon=2.0, gamma=0.5, eta=1.0):
-
-		# Normalize histogram
-		normalizedHistogram = histogram / np.sum(histogram)
-
-		entropy = 0
-		for p in normalizedHistogram:
-			if p != 0:
-				entropy += p * np.log(p) 
-
-		entropy *= -1
-		gradient = entropy - prevEntropy
-
-		if gradient > epsilon:
-			t0 *= np.exp(1.0 * gradient)
-
-		return t0, entropy, gamma
-
+	# Entropy = -\Sum p * log(p) where
+	# p is probability of each element in histogram occuring. 
 	def getEntropy(self, histogram):
-		normalizedHistogram = histogram / np.sum(histogram)
 
+		normalizedHistogram = histogram / np.sum(histogram)
 		entropy = 0
+
 		for p in normalizedHistogram:
 			if p != 0:
 				entropy += p * np.log(p) 
 
 		entropy *= -1
-
 		return entropy
 
 	def intensityGradient(self, histogram, true, median):
-
 		currAvg = self.getIntensityAverage(histogram, totalPixelCount=PIXELCOUNT, bitsPerPixel=BITSPERPIXEL)
-
 		return true - currAvg
 
-	def adjust(self):
-		for client in self.clients:
-			client.update_configuration({
-				'hdr_user_exposure_0': SHUTTER_TIMES[0],
-				'hdr_user_voltage_0': 2889,
-				"hdr_mode":'User',
-				'hdr_user_kneepoint_count' : 1})
-
-		v0_t = 0
-		t0_t = 0
-		v1_t = 0
-		t1_t = 0
-		shutter_speed_t = 0
-
-		for camera_idx, camera in enumerate(self.cameras):
-			histogram, median = self.getHistogram(camera)
-
-			# Initialization params
-			# v0raw = 2500
-			# v1raw = 2000
-			# prevEntropy = 0
-			# t0 = SHUTTER_TIMES[len(SHUTTER_TIMES) - 5]
-			# gamma = t0
-
-			# exposureReference = SHUTTER_TIMES[2]
-			# exposure = SHUTTER_TIMES[3]
-			# alpha = SHUTTER_TIMES[3]
-
-			# t1 = SHUTTER_TIMES[len(SHUTTER_TIMES) - 5]
-			shutter_speed = SHUTTER_INIT
-
-			t0, t1, v0, v1 = None, None, None, None
-
-			i = 0
-			n = 8
-			maxEntropy = 0
-			maxEntropy1 = 0
-			argmaxExposure = 0
-			argmaxExposure1 = 0
-			argmaxVoltage1 = 2066
-			argmaxVoltage = 2889	
+	def tuneShutterSpeed(self, shutter_speed, TARGET_INTENSITY=120.0, epsilon=1.0):
 			a = 0
-			while a < 100:
+			gradient = sys.maxint
+			while a < 100 or gradient < epsilon:
 				histogram, median = self.getHistogram(camera)
-				TARGET_INTENSITY = 120.0
 				gradient = self.intensityGradient(histogram, TARGET_INTENSITY, median)				
 				shutter_speed *=np.exp(gradient * 0.001)
 
@@ -215,38 +104,75 @@ class Exposure:
 
 				a += 1
 
+			return shutter_speed
+
+	def adjust(self):
+		
+		shutter_speed = SHUTTER_INIT
+
+		v0_t = 0.0
+		t0_t = 0.0
+		v1_t = 0.0
+		t1_t = 0.0
+		shutter_speed_t = 0.0
+
+		# Repeat for multiple camera
+		for camera_idx, camera in enumerate(self.cameras):
+
+			self.clients[camera_idx].update_configuration({
+				'hdr_user_exposure_0': SHUTTER_TIMES[0],
+				'hdr_user_voltage_0': 2889,
+				"hdr_mode":'User',
+				'hdr_user_kneepoint_count' : 1
+			})
+
+			histogram, median = self.getHistogram(camera)
+
+			# Tune shutter speed according to the target intensity. 
+			# Initialize shutter_speed at SHUTTER_INIT.
+			# epsilon is convergence criteria for gradient.
+			shutter_speed = self.tuneShutterSpeed(shutter_speed=shutter_speed, TARGET_INTENSITY=120.0, epsilon=1.0)
+
+			# loop parameters
+			i = 0 # loop counter
+			n = 8 # number of loop iterations
+
+			# Tuning parameters
+			# Voltages initialized around 1/3 and 2/3 marks
+			# for fixed point iterations.
+			maxEntropy = 0			# Max entropy for adjusting kneepoint 0
+			maxEntropy1 = 0			# Max entropy for adjusting kneepoint 1
+			argmaxExposure = 0		# Exposure that maximizes entropy for kneepoint 0
+			argmaxExposure1 = 0		# Exposure that maximizes entropy for kneepoint 1
+			argmaxVoltage = 2889	# Voltage that maximizes entropy for kneepoint 0
+			argmaxVoltage1 = 2066	# Voltage that maximizes entropy for kneepoint 1
+				
+			
 			while i < n:
 				
-				
-				
-				#Gradient method: 
-				# TARGET_INTENSITY = 120.0
-				# gradient = self.intensityGradient(histogram, TARGET_INTENSITY, median)				
-				# shutter_speed *=np.exp(gradient * 0.001)
-
-				# v0raw, v1raw, v0, v1 = self.adjustSaturation(histogram, v0raw, v1raw, n=100, scale=200)
-
-				# if i % 2 == 0:
-				# 	t0, prevEntropy, gamma = self.adjustEntropy(histogram, t0, t1 / 2, prevEntropy, epsilon=0.04, gamma=gamma, eta=2.2)
-				# 	t0 = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t0).argmin()]
-				# else:
-				# 	t1, prevEntropy, gamma = self.adjustEntropy(histogram, t1, t1 / 2, prevEntropy, epsilon=0.04, gamma=gamma, eta=2.0)
-				# 	t1 = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t1).argmin()]
-
+				# Adjust kneepoint 0 in first half of iterations.
+				# Adjust kneepoint 1 in second half of iterations.
 				if i < n / 2:
+
+					# Alternate between adjusting kneepoint time parameter 
+					# and voltage. 
 					if i % 1 == 0:
 
 						for exposure in SHUTTER_TIMES:
-							rospy.loginfo(exposure)
+							
+							if DEBUG:
+								rospy.loginfo("Exposure: " + str(exposure))
 							
 							self.clients[camera_idx].update_configuration({
-								'hdr_user_exposure_0' : exposure,
+								'hdr_user_exposure_0' : exposure
 							})
 							
 							histogram, median = self.getHistogram(camera)
 							entropy = self.getEntropy(histogram)
 							
-							rospy.loginfo("entropy: " + str(entropy))
+							if DEBUG:														
+								rospy.loginfo("entropy: " + str(entropy))
+							
 							if entropy >= maxEntropy:
 								maxEntropy = entropy
 								argmaxExposure = exposure
@@ -254,18 +180,26 @@ class Exposure:
 					else:
 
 						for voltage in VOLTAGE_OPTIONS[15:]:
-							rospy.loginfo(voltage)
+							
+							if DEBUG:
+								rospy.loginfo("Voltage: " + str(voltage))
+
 							self.clients[camera_idx].update_configuration({
-								'hdr_user_voltage_0' : voltage,
+								'hdr_user_voltage_0' : voltage
 							})
 							histogram, median = self.getHistogram(camera)
 							entropy = self.getEntropy(histogram)
 							
+							if DEBUG:														
+								rospy.loginfo("entropy: " + str(entropy))
+
 							if entropy >= maxEntropy:
 								maxEntropy = entropy
 								argmaxVoltage = voltage
 				else:
 
+					# Set kneepoint count to 2.Ensure prior/current 
+					# settings are updated.
 					self.clients[camera_idx].update_configuration({
 							'hdr_user_exposure_0':argmaxExposure,
 							'hdr_user_voltage_0': argmaxVoltage,
@@ -277,14 +211,19 @@ class Exposure:
 					if i % 1 == 0:
 
 						for exposure in SHUTTER_TIMES:
-							rospy.loginfo(exposure)
+							
+							if DEBUG:
+								rospy.loginfo("Exposure: " + str(exposure))
 							
 							self.clients[camera_idx].update_configuration({
-								'hdr_user_exposure_1' : exposure,
+								'hdr_user_exposure_1' : exposure
 							})
 							
 							histogram, median = self.getHistogram(camera)
 							entropy = self.getEntropy(histogram)
+
+							if DEBUG:														
+								rospy.loginfo("entropy: " + str(entropy))
 							
 							if entropy >= maxEntropy1:
 								maxEntropy1 = entropy
@@ -293,19 +232,22 @@ class Exposure:
 					else:
 
 						for voltage in VOLTAGE_OPTIONS[15:]:
-							rospy.loginfo(voltage)
+							
+							if DEBUG:
+								rospy.loginfo("Voltage: " + str(voltage))
+							
 							self.clients[camera_idx].update_configuration({
-								'hdr_user_voltage_1' : voltage,
+								'hdr_user_voltage_1' : voltage
 							})
 							histogram, median = self.getHistogram(camera)
 							entropy = self.getEntropy(histogram)
+
+							if DEBUG:														
+								rospy.loginfo("entropy: " + str(entropy))
 							
 							if entropy >= maxEntropy1:
 								maxEntropy1 = entropy
 								argmaxVoltage1 = voltage
-
-
-				### Tests here ###
 
 				if DEBUG:			
 					currAvg = self.getIntensityAverage(histogram, totalPixelCount=PIXELCOUNT, bitsPerPixel=BITSPERPIXEL)
@@ -317,55 +259,50 @@ class Exposure:
 					rospy.loginfo("argmaxVoltage1: " + str(argmaxVoltage1))
 					rospy.loginfo("argmaxExposure1: " + str(argmaxExposure1))
 
+
 				if i < n / 2:
 					self.clients[camera_idx].update_configuration({
 						'hdr_user_exposure_0' : argmaxExposure,
-						'hdr_user_voltage_0' : argmaxVoltage,
-						'hdr_mode':'User'})
+						'hdr_user_voltage_0' : argmaxVoltage
+					})
 				else:
 					self.clients[camera_idx].update_configuration({
-						'hdr_user_exposure_0' : argmaxExposure,
 						'hdr_user_exposure_1' : argmaxExposure1,
-						'hdr_user_voltage_0' : argmaxVoltage,
-						'hdr_user_voltage_1' : argmaxVoltage1,
-						'hdr_mode':'User'})
+						'hdr_user_voltage_1' : argmaxVoltage1
+					})
 
-				rospy.loginfo(i)
+				rospy.loginfo("Iteration: " + str(i))
 				i += 1			
 
-		# 	v0_t += v0
-		# 	v1_t += v1 
-		# 	t0_t += t0
-		# 	t1_t += t1
-		# 	#shutter_speed_t += shutter_speed
+			# Average out found parameters. 
+			v0_t += argmaxVoltage / self.num_cameras
+			v1_t += argmaxVoltage1 / self.num_cameras
+			t0_t += argmaxExposure / self.num_cameras
+			t1_t += argmaxExposure1 / self.num_cameras
+			shutter_speed_t += shutter_speed / self.num_cameras
 
-		# camera_nums = float(len(self.cameras))
-		# v0_t /= camera_nums
-		# v1_t /= camera_nums 
-		# t0_t /= camera_nums
-		# t1_t /= camera_nums
-		# #shutter_speed_t /= camera_nums
+		# Averaging may lead to imprecise options. Find closest parameters. 
+		v0_t = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v0_t).argmin()]
+		v1_t = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v1_t).argmin()]
+		t0_t = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t0_t).argmin()]
+		t1_t = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t1_t).argmin()]
 
-		# v0_t = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v0_t).argmin()]
-		# v1_t = VOLTAGE_OPTIONS[np.abs(VOLTAGE_OPTIONS - v1_t).argmin()]
-		# t0_t = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t0_t).argmin()]
-		# t1_t = SHUTTER_TIMES[np.abs(SHUTTER_TIMES - t1_t).argmin()]
+		if DEBUG:
+			rospy.loginfo("shutter speed_t: " + str(shutter_speed_t))
+			rospy.loginfo("v0_t: " + str(v0_t))
+			rospy.loginfo("v1_t: " + str(v1_t))
+			rospy.loginfo("t1_t: " + str(t1_t))
+			rospy.loginfo("t0_t: " + str(t0_t))
 
-		# if DEBUG:
-		# 	#rospy.loginfo("shutter speed: " + str(shutter_speed))
-		# 	rospy.loginfo("v0_t: " + str(v0_t))
-		# 	rospy.loginfo("v1_t: " + str(v1_t))
-		# 	rospy.loginfo("t1_t: " + str(t1_t))
-		# 	rospy.loginfo("t0_t: " + str(t0_t))
-
-		# for client in self.clients:
-		# 	client.update_configuration({
-		# 		'hdr_user_exposure_0' : t0_t,
-		# 		'hdr_user_exposure_1' : t1_t,
-		# 		#'hdr_user_voltage_0' : v0_t,
-		# 		#'hdr_user_voltage_1' : v1_t,
-		# 		#'shutter' : shutter_speed,
-		# 		'hdr_mode':'User'})
+		# Set all camera parameters to global average.
+		for client in self.clients:
+			client.update_configuration({
+				'hdr_user_exposure_0' : t0_t,
+				'hdr_user_exposure_1' : t1_t,
+				'hdr_user_voltage_0' : v0_t,
+				'hdr_user_voltage_1' : v1_t,
+				'shutter' : shutter_speed_t,
+				'hdr_mode':'User'})
 
 
 

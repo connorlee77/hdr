@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 
 import roslib
-roslib.load_manifest('hdr_cal')
+roslib.load_manifest('hdr_cal2')
 
 import dynamic_reconfigure.client
 import glob
@@ -13,7 +13,6 @@ import time
 
 import cv2
 import numpy as np
-from matplotlib import pyplot as plt
 
 from exposure import Exposure
 from camera import Camera
